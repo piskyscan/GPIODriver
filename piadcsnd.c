@@ -206,7 +206,7 @@ static ssize_t dev_write(struct file *filep, const char *buffer, size_t len, lof
 			set_current_state(TASK_RUNNING);
 
 			val = c & 1;
-			c << 1;
+			c = c << 1;
 
 			gpio_set_value(gpioLEDS[j],val);       // Use the LED state to light/turn off the LED
 
