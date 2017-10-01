@@ -16,23 +16,24 @@
 #include <asm/uaccess.h>          // Required for the copy to user function
 
 
-#define  DEVICE_NAME "paschar"    ///< The device will appear at /dev/ebbchar using this value
-#define  CLASS_NAME  "ebb"        ///< The device class -- this is a character device driver
+#define  DEVICE_NAME "paschar"    ///< The device will appear at /dev/paschar using this value
+#define  CLASS_NAME  "pas"        ///< The device class -- this is a character device driver
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Piskyscan");
-MODULE_DESCRIPTION("A simple Linux GPIO driver");
+MODULE_DESCRIPTION("Simple Pi Driver for GPIO");
 MODULE_VERSION("0.1");
 
 static unsigned int gpioLEDS[] = {17,27,22,5,6,26,23,25};
 static unsigned int numLeds = 8;
+
 static int    numberOpens = 0;              ///< Counts the number of times the device is opened
 
 static int    majorNumber;                  ///< Stores the device number -- determined automatically
 static char   message[256] = {0};           ///< Memory for the string that is passed from userspace
 static short  size_of_message;              ///< Used to remember the size of the string stored
-static struct class*  ebbcharClass  = NULL; ///< The device-driver class struct pointer
-static struct device* ebbcharDevice = NULL; ///< The device-driver device struct pointer
+static struct class*  pascharClass  = NULL; ///< The device-driver class struct pointer
+static struct device* pascharDevice = NULL; ///< The device-driver device struct pointer
 
 
 static unsigned int hertz = 1000;           ///Hertz to drive at.
@@ -60,7 +61,8 @@ static ssize_t hertz_show(struct kobject *kobj, struct kobj_attribute *attr, cha
 }
 
 /** @brief A callback function to store the LED mode using the enum above */
-static ssize_t hertz_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count){
+static ssize_t hertz_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
+{
 	// the count-1 is important as otherwise the \n is used in the comparison
 
 	unsigned long res;
@@ -70,12 +72,14 @@ static ssize_t hertz_store(struct kobject *kobj, struct kobj_attribute *attr, co
 }
 
 /** @brief A callback function to display the LED period */
-static ssize_t period_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf){
+static ssize_t period_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
 	return sprintf(buf, "%d\n", blinkPeriod);
 }
 
 /** @brief A callback function to store the LED period value */
-static ssize_t period_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count){
+static ssize_t period_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
+{
 	unsigned int period;                     // Using a variable to validate the data sent
 	sscanf(buf, "%du", &period);             // Read in the period as an unsigned int
 	if ((period>1)&&(period<=10000)){        // Must be 2ms or greater, 10secs or less
@@ -92,25 +96,20 @@ static ssize_t period_store(struct kobject *kobj, struct kobj_attribute *attr, c
 static struct kobj_attribute hertz_attr = __ATTR(hertz, S_IWUSR | S_IWGRP, hertz_show, hertz_store);
 static struct kobj_attribute mode_attr = __ATTR(mode, S_IWUSR | S_IWGRP, period_show, period_store);
 
-/** The ebb_attrs[] is an array of attributes that is used to create the attribute group below.
- *  The attr property of the kobj_attribute is used to extract the attribute struct
- */
-static struct attribute *ebb_attrs[] = {
+static struct attribute *pas_attrs[] =
+{
 		&hertz_attr.attr,                       // The period at which the LED flashes
 		&mode_attr.attr,                         // Is the LED on or off?
 		NULL,
 };
 
-/** The attribute group uses the attribute array and a name, which is exposed on sysfs -- in this
- *  case it is gpio49, which is automatically defined in the ebbLED_init() function below
- *  using the custom kernel parameter that can be passed when the module is loaded.
- */
-static struct attribute_group attr_group = {
-		.name  = ledName,                        // The name is generated in ebbLED_init()
-		.attrs = ebb_attrs,                      // The attributes array defined just above
+static struct attribute_group attr_group =
+{
+		.name  = ledName,
+		.attrs = pas_attrs,                      // The attributes array defined just above
 };
 
-static struct kobject *ebb_kobj;            /// The pointer to the kobject
+static struct kobject *pas_kobj;            /// The pointer to the kobject
 // static struct task_struct *task;            /// The pointer to the thread task
 
 /** @brief The LED Flasher main kthread loop
@@ -201,20 +200,22 @@ static ssize_t dev_write(struct file *filep, const char *buffer, size_t len, lof
 	{
 		c = buffer[i];
 
+//		set_current_state(TASK_RUNNING);
+
 		for (j = 0;j < numLeds;j++)
 		{
-			set_current_state(TASK_RUNNING);
 
 			val = c & 1;
-			c = c << 1;
+			c = c / 2;
+			printk(KERN_INFO "PAS: Setting port %d to %d\n", gpioLEDS[j],val);
 
 			gpio_set_value(gpioLEDS[j],val);       // Use the LED state to light/turn off the LED
 
-			set_current_state(TASK_INTERRUPTIBLE);
-
-			usleep_range(1000000/hertz, 1000000/hertz + 1);
-
 		}
+
+//		set_current_state(TASK_INTERRUPTIBLE);
+
+		usleep_range(1000000/hertz, 1000000/hertz + 1);
 
 	}
 	return len;
@@ -227,7 +228,7 @@ static ssize_t dev_write(struct file *filep, const char *buffer, size_t len, lof
  */
 static int dev_release(struct inode *inodep, struct file *filep)
 {
-	printk(KERN_INFO "EBBChar: Device successfully closed\n");
+	printk(KERN_INFO "PAS: Device successfully closed\n");
 	return 0;
 }
 
@@ -256,36 +257,36 @@ static int __init ebbLED_init(void)
 	printk(KERN_INFO "paschar: registered correctly with major number %d\n", majorNumber);
 
 	// Register the device class
-	ebbcharClass = class_create(THIS_MODULE, CLASS_NAME);
-	if (IS_ERR(ebbcharClass)){                // Check for error and clean up if there is
+	pascharClass = class_create(THIS_MODULE, CLASS_NAME);
+	if (IS_ERR(pascharClass)){                // Check for error and clean up if there is
 		unregister_chrdev(majorNumber, DEVICE_NAME);
 		printk(KERN_ALERT "Failed to register device class\n");
-		return PTR_ERR(ebbcharClass);          // Correct way to return an error on a pointer
+		return PTR_ERR(pascharClass);          // Correct way to return an error on a pointer
 	}
 	printk(KERN_INFO "EBBChar: device class registered correctly\n");
 
 	// Register the device driver
-	ebbcharDevice = device_create(ebbcharClass, NULL, MKDEV(majorNumber, 0), NULL, DEVICE_NAME);
-	if (IS_ERR(ebbcharDevice)){               // Clean up if there is an error
-		class_destroy(ebbcharClass);           // Repeated code but the alternative is goto statements
+	pascharDevice = device_create(pascharClass, NULL, MKDEV(majorNumber, 0), NULL, DEVICE_NAME);
+	if (IS_ERR(pascharDevice)){               // Clean up if there is an error
+		class_destroy(pascharClass);           // Repeated code but the alternative is goto statements
 		unregister_chrdev(majorNumber, DEVICE_NAME);
 		printk(KERN_ALERT "Failed to create the device\n");
-		return PTR_ERR(ebbcharDevice);
+		return PTR_ERR(pascharDevice);
 	}
 
 	sprintf(ledName, "GpioGroup");
 
-	ebb_kobj = kobject_create_and_add("pas", kernel_kobj->parent); // kernel_kobj points to /sys/kernel
+	pas_kobj = kobject_create_and_add("pas", kernel_kobj->parent); // kernel_kobj points to /sys/kernel
 
-	if(!ebb_kobj){
+	if(!pas_kobj){
 		printk(KERN_ALERT "PAS SND: failed to create kobject\n");
 		return -ENOMEM;
 	}
 	// add the attributes to /sys/ebb/ -- for example, /sys/ebb/led49/ledOn
-	result = sysfs_create_group(ebb_kobj, &attr_group);
+	result = sysfs_create_group(pas_kobj, &attr_group);
 	if(result) {
 		printk(KERN_ALERT "PAS SND: failed to create sysfs group\n");
-		kobject_put(ebb_kobj);                // clean up -- remove the kobject sysfs entry
+		kobject_put(pas_kobj);                // clean up -- remove the kobject sysfs entry
 		return result;
 	}
 
@@ -314,7 +315,7 @@ static void __exit ebbLED_exit(void)
 {
 	int i;
 	//   kthread_stop(task);                      // Stop the LED flashing thread
-	kobject_put(ebb_kobj);                   // clean up -- remove the kobject sysfs entry
+	kobject_put(pas_kobj);                   // clean up -- remove the kobject sysfs entry
 
 	for (i = 0; i < numLeds;i++)
 	{
@@ -323,9 +324,9 @@ static void __exit ebbLED_exit(void)
 		gpio_free(gpioLEDS[i]);
 	}
 
-	device_destroy(ebbcharClass, MKDEV(majorNumber, 0));     // remove the device
-	class_unregister(ebbcharClass);                          // unregister the device class
-	class_destroy(ebbcharClass);                             // remove the device class
+	device_destroy(pascharClass, MKDEV(majorNumber, 0));     // remove the device
+	class_unregister(pascharClass);                          // unregister the device class
+	class_destroy(pascharClass);                             // remove the device class
 	unregister_chrdev(majorNumber, DEVICE_NAME);             // unregister the major number
 
 	printk(KERN_INFO "PAS Card: Goodbye\n");
