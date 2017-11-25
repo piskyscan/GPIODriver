@@ -3,6 +3,12 @@
  * Basic kernel driver for GPIO
  */
 
+//#include <stdio.h>
+//#include <stdlib.h>
+//#include <fcntl.h>
+//#include <sys/mman.h>
+//#include <unistd.h>
+
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -14,15 +20,54 @@
 #include <linux/device.h>
 #include <linux/fs.h>             // Header for the Linux file system support
 #include <asm/uaccess.h>          // Required for the copy to user function
+#include <asm/io.h>
+// #include <mach/platform.h>
+
+
 
 
 #define  DEVICE_NAME "paschar"    ///< The device will appear at /dev/paschar using this value
-#define  CLASS_NAME  "pas"        ///< The device class -- this is a character device driver
+#define  CLASS_NAME  "pas"
+
+#define BCM2708_PERI_BASE        0x20000000
+#define GPIO_BASE                (BCM2708_PERI_BASE + 0x200000) /* GPIO controller */
+
+
+// GPIO setup macros. Always use INP_GPIO(x) before using OUT_GPIO(x) or SET_GPIO_ALT(x,y)
+#define INP_GPIO(g) *(gpio+((g)/10)) &= ~(7<<(((g)%10)*3))
+#define OUT_GPIO(g) *(gpio+((g)/10)) |=  (1<<(((g)%10)*3))
+#define SET_GPIO_ALT(g,a) *(gpio+(((g)/10))) |= (((a)<=3?(a)+4:(a)==4?3:2)<<(((g)%10)*3))
+
+#define GPIO_SET *(gpio+7)  // sets   bits which are 1 ignores bits which are 0
+#define GPIO_CLR *(gpio+10) // clears bits which are 1 ignores bits which are 0
+
+#define GET_GPIO(g) (*(gpio+13)&(1<<g)) // 0 if LOW, (1<<g) if HIGH
+
+#define GPIO_PULL *(gpio+37) // Pull up/pull down
+#define GPIO_PULLCLK0 *(gpio+38) // Pull up/pull down clock
+
+
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Piskyscan");
 MODULE_DESCRIPTION("Simple Pi Driver for GPIO");
 MODULE_VERSION("0.1");
+
+struct GpioRegisters
+{
+    uint32_t GPFSEL[6];
+    uint32_t Reserved1;
+    uint32_t GPSET[2];
+    uint32_t Reserved2;
+    uint32_t GPCLR[2];
+};
+
+struct GpioRegisters *s_pGpioRegisters;
+
+
+int  mem_fd;
+void *gpio_map;
+volatile unsigned *gpio;
 
 static unsigned int gpioLEDS[] = {17,27,22,5,6,26,23,25};
 static unsigned int numLeds = 8;
@@ -36,56 +81,65 @@ static struct class*  pascharClass  = NULL; ///< The device-driver class struct 
 static struct device* pascharDevice = NULL; ///< The device-driver device struct pointer
 
 
-static unsigned int hertz = 1000;           ///Hertz to drive at.
+static unsigned int hertz = 8000;           ///Hertz to drive at.
 module_param(hertz, uint, S_IWUSR | S_IWGRP);
 MODULE_PARM_DESC(hertz, "Herz to output at"); 
 
 static unsigned int blinkPeriod = 1000;     ///< The blink period in ms
 module_param(blinkPeriod, uint, S_IWUSR | S_IWGRP);   ///< Param desc. S_IRUGO can be read/not changed
-MODULE_PARM_DESC(blinkPeriod, " LED blink period in ms (min=1, default=1000, max=10000)");
+MODULE_PARM_DESC(blinkPeriod, " Pins to use, least significant first");
 
 static char ledName[20] = "GPIOGroup";          ///< Null terminated default string -- just in case
 // static int ledOn = 0;                      ///< Is the LED on or off? Used for flashing
 // enum modes { OFF, ON, FLASH };              ///< The available LED modes -- static not useful here
 // static enum modes mode = FLASH;             ///< Default mode is flashing
 
-/** @brief A callback function to display the LED mode
- *  @param kobj represents a kernel object device that appears in the sysfs filesystem
- *  @param attr the pointer to the kobj_attribute struct
- *  @param buf the buffer to which to write the number of presses
- *  @return return the number of characters of the mode string successfully displayed
- */
+/** @brief A callback function to show the frequency */
+
+// external functions called.
+
+static void setup_io(void);
+
+void writeVals(unsigned int *pins, int val, int count);
+
+
 static ssize_t hertz_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
+	printk(KERN_INFO "PAS: Hertz requested %d\n", hertz);
 	return sprintf(buf, "%d\n",hertz);
 }
 
-/** @brief A callback function to store the LED mode using the enum above */
+/** @brief A callback function to store the frequency */
 static ssize_t hertz_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
 {
-	// the count-1 is important as otherwise the \n is used in the comparison
-
 	unsigned long res;
 	int thertz =  kstrtoul(buf, 	10,&res);
 
-	return thertz;
+	printk(KERN_INFO "PAS: Hertz set %d\n", thertz);
+
+	hertz = thertz;
+	return count;
 }
 
-/** @brief A callback function to display the LED period */
-static ssize_t period_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+/** @brief A callback function to display the pins used */
+static ssize_t pins_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
+	printk(KERN_INFO "PAS: pins requested \n");
 	return sprintf(buf, "%d\n", blinkPeriod);
 }
 
 /** @brief A callback function to store the LED period value */
-static ssize_t period_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
+static ssize_t pins_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
 {
 	unsigned int period;                     // Using a variable to validate the data sent
+
+	printk(KERN_INFO "PAS: pins set \n");
+
 	sscanf(buf, "%du", &period);             // Read in the period as an unsigned int
 	if ((period>1)&&(period<=10000)){        // Must be 2ms or greater, 10secs or less
 		blinkPeriod = period;                 // Within range, assign to blinkPeriod variable
 	}
-	return period;
+	return count;
 }
 
 /** Use these helper macros to define the name and access levels of the kobj_attributes
@@ -94,7 +148,7 @@ static ssize_t period_store(struct kobject *kobj, struct kobj_attribute *attr, c
  *  with mode 0666 using the period_show and period_store functions above
  */
 static struct kobj_attribute hertz_attr = __ATTR(hertz, S_IWUSR | S_IWGRP, hertz_show, hertz_store);
-static struct kobj_attribute mode_attr = __ATTR(mode, S_IWUSR | S_IWGRP, period_show, period_store);
+static struct kobj_attribute mode_attr = __ATTR(mode, S_IWUSR | S_IWGRP, pins_show, pins_store);
 
 static struct attribute *pas_attrs[] =
 {
@@ -112,29 +166,6 @@ static struct attribute_group attr_group =
 static struct kobject *pas_kobj;            /// The pointer to the kobject
 // static struct task_struct *task;            /// The pointer to the thread task
 
-/** @brief The LED Flasher main kthread loop
- *
- *  @param arg A void pointer used in order to pass data to the thread
- *  @return returns 0 if successful
- */
-
-/**********
-
-static int flash(void *arg){
-   printk(KERN_INFO "EBB LED: Thread has started running \n");
-   while(!kthread_should_stop()){           // Returns true when kthread_stop() is called
-      set_current_state(TASK_RUNNING);
-      if (mode==FLASH) ledOn = !ledOn;      // Invert the LED state
-      else if (mode==ON) ledOn = true;
-      else ledOn = false;
-      gpio_set_value(gpioLED, ledOn);       // Use the LED state to light/turn off the LED
-      set_current_state(TASK_INTERRUPTIBLE);
-      msleep(blinkPeriod/2);                // millisecond sleep for half of the period
-   }
-   printk(KERN_INFO "EBB LED: Thread has run to completion \n");
-   return 0;
-}
- */
 
 // The prototype functions for the character driver -- must come before the struct definition
 static int     dev_open(struct inode *, struct file *);
@@ -173,26 +204,18 @@ static ssize_t dev_read(struct file *filep, char *buffer, size_t len, loff_t *of
 	}
 	else
 	{
-		printk(KERN_INFO "EBBChar: Failed to send %d characters to the user\n", error_count);
+		printk(KERN_INFO "PAS: Failed to send %d characters to the user\n", error_count);
 		return -EFAULT;              // Failed -- return a bad address message (i.e. -14)
 	}
 }
 
-/** @brief This function is called whenever the device is being written to from user space i.e.
- *  data is sent to the device from the user. The data is copied to the message[] array in this
- *  LKM using the sprintf() function along with the length of the string.
- *  @param filep A pointer to a file object
- *  @param buffer The buffer to that contains the string to write to the device
- *  @param len The length of the array of data that is being passed in the const char buffer
- *  @param offset The offset if required
- */
 static ssize_t dev_write(struct file *filep, const char *buffer, size_t len, loff_t *offset)
 
 {
 	int i;
-	int j;
+//	int j;
 	char c;
-	int val;
+//	int val;
 
 	printk(KERN_INFO "PAS: Received %zu characters from the user\n", len);
 
@@ -200,20 +223,17 @@ static ssize_t dev_write(struct file *filep, const char *buffer, size_t len, lof
 	{
 		c = buffer[i];
 
-//		set_current_state(TASK_RUNNING);
+		writeVals(gpioLEDS,  c, numLeds);
 
-		for (j = 0;j < numLeds;j++)
-		{
-
-			val = c & 1;
-			c = c / 2;
-			printk(KERN_INFO "PAS: Setting port %d to %d\n", gpioLEDS[j],val);
-
-			gpio_set_value(gpioLEDS[j],val);       // Use the LED state to light/turn off the LED
-
-		}
-
-//		set_current_state(TASK_INTERRUPTIBLE);
+//		for (j = 0;j < numLeds;j++)
+//		{
+//
+//			val = c & 1;
+//			c = c / 2;
+//
+//			gpio_set_value(gpioLEDS[j],val);       // Use the LED state to light/turn off the LED
+//
+//		}
 
 		usleep_range(1000000/hertz, 1000000/hertz + 1);
 
@@ -240,7 +260,8 @@ static int dev_release(struct inode *inodep, struct file *filep)
  *  function sets up the GPIOs and the IRQ
  *  @return returns 0 if successful
  */
-static int __init ebbLED_init(void)
+
+static int __init paschar_init(void)
 {
 	int result = 0;
 	int i;
@@ -263,7 +284,7 @@ static int __init ebbLED_init(void)
 		printk(KERN_ALERT "Failed to register device class\n");
 		return PTR_ERR(pascharClass);          // Correct way to return an error on a pointer
 	}
-	printk(KERN_INFO "EBBChar: device class registered correctly\n");
+	printk(KERN_INFO "PASChar: device class registered correctly\n");
 
 	// Register the device driver
 	pascharDevice = device_create(pascharClass, NULL, MKDEV(majorNumber, 0), NULL, DEVICE_NAME);
@@ -274,15 +295,18 @@ static int __init ebbLED_init(void)
 		return PTR_ERR(pascharDevice);
 	}
 
+	setup_io();
+
 	sprintf(ledName, "GpioGroup");
 
 	pas_kobj = kobject_create_and_add("pas", kernel_kobj->parent); // kernel_kobj points to /sys/kernel
+
 
 	if(!pas_kobj){
 		printk(KERN_ALERT "PAS SND: failed to create kobject\n");
 		return -ENOMEM;
 	}
-	// add the attributes to /sys/ebb/ -- for example, /sys/ebb/led49/ledOn
+
 	result = sysfs_create_group(pas_kobj, &attr_group);
 	if(result) {
 		printk(KERN_ALERT "PAS SND: failed to create sysfs group\n");
@@ -311,7 +335,7 @@ static int __init ebbLED_init(void)
  *  Similar to the initialization function, it is static. The __exit macro notifies that if this
  *  code is used for a built-in driver (not a LKM) that this function is not required.
  */
-static void __exit ebbLED_exit(void)
+static void __exit paschar_exit(void)
 {
 	int i;
 	//   kthread_stop(task);                      // Stop the LED flashing thread
@@ -334,5 +358,51 @@ static void __exit ebbLED_exit(void)
 
 /// This next calls are  mandatory -- they identify the initialization function
 /// and the cleanup function (as above).
-module_init(ebbLED_init);
-module_exit(ebbLED_exit);
+module_init(paschar_init);
+module_exit(paschar_exit);
+
+
+//
+// Set up a memory regions to access GPIO
+//
+void setup_io()
+{
+//	s_pGpioRegisters = (struct GpioRegisters *)__io_address(GPIO_BASE);
+	s_pGpioRegisters = (struct GpioRegisters *)ioremap(GPIO_BASE, sizeof(struct GpioRegisters));
+
+   // Always use volatile pointer!
+   gpio = (volatile unsigned *)gpio_map;
+
+
+} // setup_io
+
+void writeVals(unsigned int *pins, int val, int count)
+{
+	int i;
+	int set = 0;
+	int clear = 0;
+	int mask = 0;
+	int maskPins = 0;
+
+	for (i = 0;i < count;i++)
+	{
+		mask = 1 << i;
+		maskPins = 1 << pins[i];
+
+		if ((val & mask) != 0)
+		{
+			set = set | maskPins;
+		}
+		else
+		{
+			clear = clear | maskPins;
+		}
+	}
+
+	s_pGpioRegisters->GPCLR[0] = clear;
+	s_pGpioRegisters->GPSET[0] = set;
+
+//    GPIO_SET = set;
+//    GPIO_CLR = clear;
+
+}
