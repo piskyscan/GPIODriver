@@ -21,7 +21,7 @@
 #include <linux/fs.h>             // Header for the Linux file system support
 #include <asm/uaccess.h>          // Required for the copy to user function
 #include <asm/io.h>
-// #include <mach/platform.h>
+#include <mach/platform.h>
 
 
 
@@ -368,8 +368,8 @@ module_exit(paschar_exit);
 void setup_io()
 {
 //	s_pGpioRegisters = (struct GpioRegisters *)__io_address(GPIO_BASE);
-	s_pGpioRegisters = (struct GpioRegisters *)ioremap(GPIO_BASE, 4096);
-
+	// gpio_map = (uint32_t *) = ioremap(GPIO_BASE, 4096);
+	gpio_map = (uint32_t *) = __io_address(GPIO_BASE);
    // Always use volatile pointer!
    gpio = (volatile unsigned *)gpio_map;
 
@@ -399,10 +399,10 @@ void writeVals(unsigned int *pins, int val, int count)
 		}
 	}
 
-	s_pGpioRegisters->GPCLR[0] = clear;
-	s_pGpioRegisters->GPSET[0] = set;
+//	s_pGpioRegisters->GPCLR[0] = clear;
+//	s_pGpioRegisters->GPSET[0] = set;
 
-//    GPIO_SET = set;
-//    GPIO_CLR = clear;
+    GPIO_SET = set;
+    GPIO_CLR = clear;
 
 }
