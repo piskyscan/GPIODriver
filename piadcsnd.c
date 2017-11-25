@@ -21,8 +21,7 @@
 #include <linux/fs.h>             // Header for the Linux file system support
 #include <asm/uaccess.h>          // Required for the copy to user function
 #include <asm/io.h>
-#include <mach/platform.h>
-
+#include <linux/platform_data/bcm2708.h>
 
 
 
