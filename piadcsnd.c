@@ -368,7 +368,7 @@ module_exit(paschar_exit);
 void setup_io()
 {
 //	s_pGpioRegisters = (struct GpioRegisters *)__io_address(GPIO_BASE);
-	s_pGpioRegisters = (struct GpioRegisters *)ioremap(GPIO_BASE, sizeof(struct GpioRegisters));
+	s_pGpioRegisters = (struct GpioRegisters *)ioremap(GPIO_BASE, 4096);
 
    // Always use volatile pointer!
    gpio = (volatile unsigned *)gpio_map;
