@@ -326,10 +326,18 @@ static int __init paschar_init(void)
 
 	for (i = 0; i < numLeds;i++)
 	{
-		gpio_request(gpioLEDS[i], "sysfs");          // gpioLED is 49 by default, request it
+		gpio_request(gpioLEDS[i], "sysfs");
 		gpio_direction_output(gpioLEDS[i], 0);   // Set the gpio to be in output mode and turn on
-		gpio_export(gpioLEDS[i], false);  // causes gpio49 to appear in /sys/class/gpio
+		gpio_export(gpioLEDS[i], false);  // causes gpio to appear in /sys/class/gpio
 		// the second argument prevents the direction from being changed
+	}
+
+
+	if(request_mem_region(PORT, RANGE, DEVICE_NAME) == NULL)
+	{
+		printk(KERN_ALERT "PAS SND: failed to request memory region\n");
+			unregister_chrdev(majorNumber, DEVICE_NAME);
+			return -ENOMEM;
 	}
 
 	//    task = kthread_run(flash, NULL, "LED_flash_thread");  // Start the LED flashing thread
@@ -378,12 +386,6 @@ module_exit(paschar_exit);
 int setup_io()
 {
 
-	if(request_mem_region(PORT, RANGE, DEVICE_NAME) == NULL)
-	{
-		printk(KERN_ALERT "PAS SND: failed to request memory region\n");
-			unregister_chrdev(majorNumber, DEVICE_NAME);
-			return -ENOMEM;
-	}
 
 
 //	s_pGpioRegisters = (struct GpioRegisters *)__io_address(GPIO_BASE);
