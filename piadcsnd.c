@@ -1,6 +1,6 @@
 /**
  *
- * Basic kernel driver for GPIO
+set * Basic kernel driver for GPIO
  */
 
 //#include <stdio.h>
@@ -30,6 +30,10 @@
 
 #define BCM2708_PERI_BASE        0x20000000
 #define GPIO_BASE                (BCM2708_PERI_BASE + 0x200000) /* GPIO controller */
+
+static unsigned PORT = 0x20200000;
+
+static unsigned RANGE =  0x40;
 
 
 // GPIO setup macros. Always use INP_GPIO(x) before using OUT_GPIO(x) or SET_GPIO_ALT(x,y)
@@ -97,10 +101,9 @@ static char ledName[20] = "GPIOGroup";          ///< Null terminated default str
 
 // external functions called.
 
-static void setup_io(void);
+static int setup_io(void);
 
 void writeVals(unsigned int *pins, int val, int count);
-
 
 static ssize_t hertz_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
@@ -183,8 +186,16 @@ static struct file_operations fops =
 
 static int dev_open(struct inode *inodep, struct file *filep){
 	numberOpens++;
-	printk(KERN_INFO "PAS: Device has been opened %d time(s)\n", numberOpens);
-	return 0;
+	if (setup_io() == 0)
+	{
+		printk(KERN_INFO "PAS: Device has been opened %d time(s)\n", numberOpens);
+		return 0;
+	}
+	else
+	{
+		printk(KERN_INFO "PAS: Device setup failed\n");
+		return -EFAULT;;
+	}
 }
 
 
@@ -294,7 +305,7 @@ static int __init paschar_init(void)
 		return PTR_ERR(pascharDevice);
 	}
 
-	setup_io();
+	// setup_io();
 
 	sprintf(ledName, "GpioGroup");
 
@@ -364,14 +375,24 @@ module_exit(paschar_exit);
 //
 // Set up a memory regions to access GPIO
 //
-void setup_io()
+int setup_io()
 {
+
+	if(request_mem_region(PORT, RANGE, DEVICE_NAME) == NULL)
+	{
+		printk(KERN_ALERT "PAS SND: failed to request memory region\n");
+			unregister_chrdev(majorNumber, DEVICE_NAME);
+			return -ENOMEM;
+	}
+
+
 //	s_pGpioRegisters = (struct GpioRegisters *)__io_address(GPIO_BASE);
 	// gpio_map = (uint32_t *) = ioremap(GPIO_BASE, 4096);
-	gpio_map = (uint32_t *) = __io_address(GPIO_BASE);
+   gpio_map = (uint32_t *) ioremap(PORT, RANGE);
    // Always use volatile pointer!
    gpio = (volatile unsigned *)gpio_map;
 
+   return 0;
 
 } // setup_io
 
