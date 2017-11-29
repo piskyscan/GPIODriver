@@ -35,7 +35,7 @@ static unsigned PORT = 0x20200000;
 
 static unsigned RANGE =  0x40;
 
-#define MICROSECOND 1e6
+#define MICROSECONDS 1e6
 
 
 
@@ -220,6 +220,7 @@ static void writeVal(char c)
 
 static enum hrtimer_restart timedRefresh(struct hrtimer* mytimer)
 {
+	unsigned long sampleInterval = (MICROSECONDS/hertz);
 
 	writeVal(mybuffer.buffer[mybuffer.tail]);
 
@@ -230,7 +231,7 @@ static enum hrtimer_restart timedRefresh(struct hrtimer* mytimer)
 	}
 
 	/** add one sample interval to our clock*/
-	hrtimer_forward_now(mytimer, (ktime_set(0,1000*(MICROSECONDS/hertz))));
+	hrtimer_forward_now(mytimer, (ktime_set(0,1000*sampleInterval)));
 
 	/** reset the timer to trigger again later*/
 	return HRTIMER_RESTART;
@@ -382,6 +383,8 @@ static int __init paschar_init(void)
 {
 	int result = 0;
 	int i;
+	unsigned long sampleInterval = (MICROSECONDS/hertz);
+
 
 	printk(KERN_INFO "PAS : Initializing the Piadcsnd\n");
 
@@ -448,8 +451,7 @@ static int __init paschar_init(void)
 	hrtimer_init(&refreshclock, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	refreshclock.function = &timedRefresh;
 
-	hrtimer_start(&refreshclock, ktime_set(0,1000*(MICROSECONDS/hertz)), HRTIMER_MODE_REL);
-
+	hrtimer_start(&refreshclock, ktime_set(0,1000*sampleInterval), HRTIMER_MODE_REL);
 
 
 	//    task = kthread_run(flash, NULL, "LED_flash_thread");  // Start the LED flashing thread
