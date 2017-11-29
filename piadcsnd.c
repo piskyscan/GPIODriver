@@ -83,6 +83,22 @@ static short  size_of_message;              ///< Used to remember the size of th
 static struct class*  pascharClass  = NULL; ///< The device-driver class struct pointer
 static struct device* pascharDevice = NULL; ///< The device-driver device struct pointer
 
+/** size of input buffer is 1 megabyte*/
+#define buffersize 1048576
+
+/** @brief structure of our input buffer*/
+struct circbuf{
+	size_t tail, head; /**< dequeue/read index and enqueue/write index*/
+	unsigned char buffer[buffersize];/**< circular buffer backing store*/
+};
+
+/** @brief The circular input buffer in use by our program*/
+static struct circbuf mybuffer;
+
+/** @brief the mutex used to ensure only one write executes at a time*/
+static DEFINE_MUTEX(inputlock);
+
+
 
 static unsigned int hertz = 8000;           ///Hertz to drive at.
 module_param(hertz, uint, S_IWUSR | S_IWGRP);
@@ -187,7 +203,8 @@ static struct file_operations fops =
 		.release = dev_release,
 };
 
-static int dev_open(struct inode *inodep, struct file *filep){
+static int dev_open(struct inode *inodep, struct file *filep)
+{
 	numberOpens++;
 
 	printk(KERN_INFO "PAS: Device has been opened %d time(s)\n", numberOpens);
@@ -232,7 +249,57 @@ static void writeVal(char c)
 	}
 }
 
-static ssize_t dev_write(struct file *filep, const char *buffer, size_t len, loff_t *offset)
+static ssize_t dev_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
+{
+	size_t pulltemp;/**< stores temporary conservative copy of dequeue index of the circular buffer*/
+	size_t pushtemp;/**< stores temporary conservative copy of enqueue index of the circular buffer*/
+	size_t space;/**< space available in buffer*/
+	size_t firstspace;/**< space available in the buffer before wrapping*/
+	size_t secondspace;/**< space available in the buffer after writing */
+	size_t firstwrite;/**< bytes written to the buffer before the wrap*/
+	size_t secondwrite;/**< bytes written to the buffer after the wrap*/
+	size_t notwritten = 0;/**< bytes not written if a copy_from_user fails*/
+
+	/** block any other write methods that try to start while this one is in progress fail if impossible*/
+	if(mutex_lock_interruptible(&inputlock))
+		return 0;
+	/** set the variables to their values*/
+	pulltemp = mybuffer.tail;
+	pushtemp = mybuffer.head;
+	space = CIRC_SPACE(pushtemp, pulltemp, buffersize);
+	firstspace = CIRC_SPACE_TO_END(pushtemp, pulltemp, buffersize);
+	secondspace = space - firstspace;
+	firstwrite = (count < firstspace) ? count : firstspace;
+	secondwrite = (count < space) ? count - firstwrite : secondspace;
+
+	/** Write any segments of data into the buffer before or after the wrap at the end of the backing store*/
+	if(firstwrite)
+		notwritten = copy_from_user((void *)(mybuffer.buffer + pushtemp), (const void __user*)buf, firstwrite);
+	/* if there was an error in copy_from_user return only the number of bytes copied*/
+	if(notwritten){
+		/* increment the enqueue index by the number of bytes actually written*/
+		mybuffer.head = (pushtemp + firstwrite - notwritten) % buffersize;
+		mutex_unlock(&inputlock);
+		return firstwrite-notwritten;
+	}
+	if(secondwrite)/**< if there's some data to write to the other side of the loop, do so*/
+		notwritten = copy_from_user((void *)mybuffer.buffer, (const void __user*)(buf+firstwrite), secondwrite);
+	if(notwritten){
+		mybuffer.head = (pushtemp + firstwrite + secondwrite - notwritten) % buffersize;
+		mutex_unlock(&inputlock);
+		return firstwrite+secondwrite-notwritten;
+	}
+
+	/** increment the enqueue index by the number of bytes actually written*/
+	mybuffer.head = (pushtemp + firstwrite + secondwrite) % buffersize;
+	/** let other writes commence*/
+	mutex_unlock(&inputlock);
+	/** return the number of bytes written*/
+	return firstwrite+secondwrite;
+}
+
+
+static ssize_t dev_write_old(struct file *filep, const char *buffer, size_t len, loff_t *offset)
 
 {
 	int i;
@@ -345,6 +412,18 @@ static int __init paschar_init(void)
 		// the second argument prevents the direction from being changed
 	}
 
+	// setup buffer
+	mybuffer.head = 1;
+	mybuffer.tail = 0;
+	mybuffer.buffer[0] = 0;
+
+	/** initialize, set callback, and start our DAC loader timer*/
+	hrtimer_init(&refreshclock, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	refreshclock.function = &timedRefresh;
+
+	hrtimer_start(&refreshclock, (1000000/hertz), HRTIMER_MODE_REL);
+
+
 
 	//    task = kthread_run(flash, NULL, "LED_flash_thread");  // Start the LED flashing thread
 	//   if(IS_ERR(task)){                                     // Kthread name is LED_flash_thread
@@ -386,51 +465,31 @@ module_init(paschar_init);
 module_exit(paschar_exit);
 
 
+static enum hrtimer_restart DACrefresh(struct hrtimer* mytimer)
+{
+  return HRTIMER_NORESTART;/* wait to be started */
+}
+
+
 //
-// Set up a memory regions to access GPIO
+// timer to write value
 //
-int setup_io()
+
+static enum hrtimer_restart timedRefresh(struct hrtimer* mytimer)
 {
 
+	writeVal(mybuffer.buffer[mybuffer.tail]);
 
-
-//	s_pGpioRegisters = (struct GpioRegisters *)__io_address(GPIO_BASE);
-	// gpio_map = (uint32_t *) = ioremap(GPIO_BASE, 4096);
-   gpio_map = (uint32_t *) ioremap(PORT, RANGE);
-   // Always use volatile pointer!
-   gpio = (volatile unsigned *)gpio_map;
-
-   return 0;
-
-} // setup_io
-
-void writeVals(unsigned int *pins, int val, int count)
-{
-	int i;
-	int set = 0;
-	int clear = 0;
-	int mask = 0;
-	int maskPins = 0;
-
-	for (i = 0;i < count;i++)
+	/** if there's more than one sample in the buffer, increment the dequeue index*/
+	if(CIRC_CNT(mybuffer.head,mybuffer.tail,buffersize) > 1)
 	{
-		mask = 1 << i;
-		maskPins = 1 << pins[i];
-
-		if ((val & mask) != 0)
-		{
-			set = set | maskPins;
-		}
-		else
-		{
-			clear = clear | maskPins;
-		}
+		mybuffer.tail = (mybuffer.tail+1) % buffersize;
 	}
 
-//	s_pGpioRegisters->GPCLR[0] = clear;
-//	s_pGpioRegisters->GPSET[0] = set;
+	/** add one sample interval to our clock*/
+	hrtimer_forward_now(mytimer, ((1000000/hertz)));
 
-    GPIO_SET = set;
-    GPIO_CLR = clear;
-
+	/** reset the timer to trigger again later*/
+	return HRTIMER_RESTART;
 }
+
