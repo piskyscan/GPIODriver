@@ -19,10 +19,10 @@ set * Basic kernel driver for GPIO
 #include <linux/sched.h>
 #include <linux/device.h>
 #include <linux/fs.h>             // Header for the Linux file system support
+#include <linux/circ_buf.h>
 #include <asm/uaccess.h>          // Required for the copy to user function
 #include <asm/io.h>
 #include <linux/platform_data/bcm2708.h>
-
 
 
 #define  DEVICE_NAME "paschar"    ///< The device will appear at /dev/paschar using this value
@@ -192,7 +192,30 @@ static ssize_t dev_read(struct file *, char *, size_t, loff_t *);
 static ssize_t dev_write(struct file *, const char *, size_t, loff_t *);
 
 /** @brief high-resolution timer used for the write-signal to the DAC*/
-static struct hrtimer writeclock;
+static struct hrtimer refreshclock;
+
+
+//
+// timer to write value
+//
+
+static enum hrtimer_restart timedRefresh(struct hrtimer* mytimer)
+{
+
+	writeVal(mybuffer.buffer[mybuffer.tail]);
+
+	/** if there's more than one sample in the buffer, increment the dequeue index*/
+	if(CIRC_CNT(mybuffer.head,mybuffer.tail,buffersize) > 1)
+	{
+		mybuffer.tail = (mybuffer.tail+1) % buffersize;
+	}
+
+	/** add one sample interval to our clock*/
+	hrtimer_forward_now(mytimer, (ktime_set(0,(1000000/hertz))));
+
+	/** reset the timer to trigger again later*/
+	return HRTIMER_RESTART;
+}
 
 
 static struct file_operations fops =
@@ -421,7 +444,7 @@ static int __init paschar_init(void)
 	hrtimer_init(&refreshclock, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	refreshclock.function = &timedRefresh;
 
-	hrtimer_start(&refreshclock, (1000000/hertz), HRTIMER_MODE_REL);
+	hrtimer_start(&refreshclock, ktime_set(0,(1000000/hertz)), HRTIMER_MODE_REL);
 
 
 
@@ -463,33 +486,4 @@ static void __exit paschar_exit(void)
 /// and the cleanup function (as above).
 module_init(paschar_init);
 module_exit(paschar_exit);
-
-
-static enum hrtimer_restart DACrefresh(struct hrtimer* mytimer)
-{
-  return HRTIMER_NORESTART;/* wait to be started */
-}
-
-
-//
-// timer to write value
-//
-
-static enum hrtimer_restart timedRefresh(struct hrtimer* mytimer)
-{
-
-	writeVal(mybuffer.buffer[mybuffer.tail]);
-
-	/** if there's more than one sample in the buffer, increment the dequeue index*/
-	if(CIRC_CNT(mybuffer.head,mybuffer.tail,buffersize) > 1)
-	{
-		mybuffer.tail = (mybuffer.tail+1) % buffersize;
-	}
-
-	/** add one sample interval to our clock*/
-	hrtimer_forward_now(mytimer, ((1000000/hertz)));
-
-	/** reset the timer to trigger again later*/
-	return HRTIMER_RESTART;
-}
 
