@@ -175,6 +175,9 @@ static int     dev_release(struct inode *, struct file *);
 static ssize_t dev_read(struct file *, char *, size_t, loff_t *);
 static ssize_t dev_write(struct file *, const char *, size_t, loff_t *);
 
+/** @brief high-resolution timer used for the write-signal to the DAC*/
+static struct hrtimer writeclock;
+
 
 static struct file_operations fops =
 {
@@ -186,16 +189,10 @@ static struct file_operations fops =
 
 static int dev_open(struct inode *inodep, struct file *filep){
 	numberOpens++;
-	if (setup_io() == 0)
-	{
-		printk(KERN_INFO "PAS: Device has been opened %d time(s)\n", numberOpens);
-		return 0;
-	}
-	else
-	{
-		printk(KERN_INFO "PAS: Device setup failed\n");
-		return -EFAULT;;
-	}
+
+	printk(KERN_INFO "PAS: Device has been opened %d time(s)\n", numberOpens);
+
+	return 0;
 }
 
 
@@ -219,13 +216,29 @@ static ssize_t dev_read(struct file *filep, char *buffer, size_t len, loff_t *of
 	}
 }
 
+static void writeVal(char c)
+{
+	int j;
+	int val;
+
+	for (j = 0;j < numLeds;j++)
+	{
+
+		val = c & 1;
+		c = c / 2;
+
+		gpio_set_value(gpioLEDS[j],val);       // Use the LED state to light/turn off the LED
+
+	}
+}
+
 static ssize_t dev_write(struct file *filep, const char *buffer, size_t len, loff_t *offset)
 
 {
 	int i;
-//	int j;
+	int j;
 	char c;
-//	int val;
+	int val;
 
 	printk(KERN_INFO "PAS: Received %zu characters from the user\n", len);
 
@@ -233,7 +246,7 @@ static ssize_t dev_write(struct file *filep, const char *buffer, size_t len, lof
 	{
 		c = buffer[i];
 
-		writeVals(gpioLEDS,  c, numLeds);
+		writeVal(c);
 
 //		for (j = 0;j < numLeds;j++)
 //		{
@@ -332,13 +345,6 @@ static int __init paschar_init(void)
 		// the second argument prevents the direction from being changed
 	}
 
-
-	if(request_mem_region(PORT, RANGE, DEVICE_NAME) == NULL)
-	{
-		printk(KERN_ALERT "PAS SND: failed to request memory region\n");
-			unregister_chrdev(majorNumber, DEVICE_NAME);
-			return -ENOMEM;
-	}
 
 	//    task = kthread_run(flash, NULL, "LED_flash_thread");  // Start the LED flashing thread
 	//   if(IS_ERR(task)){                                     // Kthread name is LED_flash_thread
