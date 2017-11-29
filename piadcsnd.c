@@ -35,6 +35,9 @@ static unsigned PORT = 0x20200000;
 
 static unsigned RANGE =  0x40;
 
+#define NANOSECONDS 1e9
+
+
 
 // GPIO setup macros. Always use INP_GPIO(x) before using OUT_GPIO(x) or SET_GPIO_ALT(x,y)
 #define INP_GPIO(g) *(gpio+((g)/10)) &= ~(7<<(((g)%10)*3))
@@ -119,7 +122,7 @@ static char ledName[20] = "GPIOGroup";          ///< Null terminated default str
 
 static int setup_io(void);
 
-void writeVals(unsigned int *pins, int val, int count);
+static void writeVals(unsigned int *pins, int val, int count);
 
 static ssize_t hertz_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
@@ -135,7 +138,7 @@ static ssize_t hertz_store(struct kobject *kobj, struct kobj_attribute *attr, co
 
 	printk(KERN_INFO "PAS: Hertz set %d\n", thertz);
 
-	hertz = thertz;
+	hertz = res;
 	return count;
 }
 
@@ -199,6 +202,22 @@ static struct hrtimer refreshclock;
 // timer to write value
 //
 
+static void writeVal(char c)
+{
+	int j;
+	int val;
+
+	for (j = 0;j < numLeds;j++)
+	{
+
+		val = c & 1;
+		c = c / 2;
+
+		gpio_set_value(gpioLEDS[j],val);       // Use the LED state to light/turn off the LED
+
+	}
+}
+
 static enum hrtimer_restart timedRefresh(struct hrtimer* mytimer)
 {
 
@@ -211,7 +230,7 @@ static enum hrtimer_restart timedRefresh(struct hrtimer* mytimer)
 	}
 
 	/** add one sample interval to our clock*/
-	hrtimer_forward_now(mytimer, (ktime_set(0,(1000000/hertz))));
+	hrtimer_forward_now(mytimer, (ktime_set(0,(NANOSECONDS/hertz))));
 
 	/** reset the timer to trigger again later*/
 	return HRTIMER_RESTART;
@@ -256,21 +275,6 @@ static ssize_t dev_read(struct file *filep, char *buffer, size_t len, loff_t *of
 	}
 }
 
-static void writeVal(char c)
-{
-	int j;
-	int val;
-
-	for (j = 0;j < numLeds;j++)
-	{
-
-		val = c & 1;
-		c = c / 2;
-
-		gpio_set_value(gpioLEDS[j],val);       // Use the LED state to light/turn off the LED
-
-	}
-}
 
 static ssize_t dev_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
@@ -444,7 +448,7 @@ static int __init paschar_init(void)
 	hrtimer_init(&refreshclock, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	refreshclock.function = &timedRefresh;
 
-	hrtimer_start(&refreshclock, ktime_set(0,(1000000/hertz)), HRTIMER_MODE_REL);
+	hrtimer_start(&refreshclock, ktime_set(0,(NANOSECONDS/hertz)), HRTIMER_MODE_REL);
 
 
 
@@ -473,6 +477,15 @@ static void __exit paschar_exit(void)
 		gpio_unexport(gpioLEDS[i]);                  // Unexport the Button GPIO
 		gpio_free(gpioLEDS[i]);
 	}
+
+	if(refreshclock.function == &timedRefresh)
+	{
+		/** cancel the timers, waiting callbacks to complete if neccesary*/
+		hrtimer_cancel(&refreshclock);
+
+	}
+
+	/** deregister our device with the system*/
 
 	device_destroy(pascharClass, MKDEV(majorNumber, 0));     // remove the device
 	class_unregister(pascharClass);                          // unregister the device class
