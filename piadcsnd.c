@@ -35,7 +35,7 @@ static unsigned PORT = 0x20200000;
 
 static unsigned RANGE =  0x40;
 
-#define NANOSECONDS 1e9
+#define MICROSECOND 1e6
 
 
 
@@ -230,7 +230,7 @@ static enum hrtimer_restart timedRefresh(struct hrtimer* mytimer)
 	}
 
 	/** add one sample interval to our clock*/
-	hrtimer_forward_now(mytimer, (ktime_set(0,(NANOSECONDS/hertz))));
+	hrtimer_forward_now(mytimer, (ktime_set(0,1000*(MICROSECONDS/hertz))));
 
 	/** reset the timer to trigger again later*/
 	return HRTIMER_RESTART;
@@ -448,7 +448,7 @@ static int __init paschar_init(void)
 	hrtimer_init(&refreshclock, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	refreshclock.function = &timedRefresh;
 
-	hrtimer_start(&refreshclock, ktime_set(0,(NANOSECONDS/hertz)), HRTIMER_MODE_REL);
+	hrtimer_start(&refreshclock, ktime_set(0,1000*(MICROSECONDS/hertz)), HRTIMER_MODE_REL);
 
 
 
