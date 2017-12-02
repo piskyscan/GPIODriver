@@ -75,11 +75,7 @@ MODULE_PARM_DESC(numLeds, " Pins to use, least significant first");
 
 static char ledName[20] = "GPIOGroup";          ///< Null terminated default string -- just in case
 
-static int setup_io(void);
-
-static void writeVals(unsigned int *pins, int val, int count);
-
-static void setupGPIO()
+static void setupGPIO(void)
 {
 	int i;
 
@@ -115,7 +111,6 @@ static ssize_t hertz_store(struct kobject *kobj, struct kobj_attribute *attr, co
 static ssize_t pins_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	int i;
-	char buffer[100];
 
 	for (i = 0;i < numLeds;i++)
 	{
@@ -129,15 +124,13 @@ static ssize_t pins_show(struct kobject *kobj, struct kobj_attribute *attr, char
 /** @brief A callback function to store the GPIO pin mapping */
 static ssize_t pins_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
 {
-	unsigned int period;                     // Using a variable to validate the data sent
-
 	int i;
 	int state = 0;
 	char c;
 	int num = 0;
 	int number = 0;
 
-	for (i = 0;i<count,i++)
+	for (i = 0;i<count;i++)
 	{
 		c = buf[i];
 
@@ -250,7 +243,6 @@ static enum hrtimer_restart timedRefresh(struct hrtimer* mytimer)
 		mybuffer.tail = (mybuffer.tail+1) % buffersize;
 	}
 
-
 	/** add one sample interval to our clock*/
 	hrtimer_forward_now(mytimer, (ktime_set(0,sampleInterval)));
 
@@ -309,39 +301,6 @@ static ssize_t dev_read(struct file *filep, char *buffer, size_t len, loff_t *of
 }
 
 
-static ssize_t dev_write1(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
-{
-	int done = 0;
-	const char *bufPtr;
-	size_t left = count;
-	ssize_t processed;
-
-	do {
-		bufPtr = &buf[done];
-
-		processed = dev_write(filp,bufPtr, left, f_pos);
-		done = done + processed;
-		left = left - processed;
-
-		if (left > 0)
-		{
-			// Block and wait till there is some room
-			if(mutex_lock_interruptible(&bufferlock))
-				return 0;
-
-			isHeld = true;
-
-			if(mutex_lock_interruptible(&bufferlock))
-				return 0;
-
-			mutex_unlock(&bufferlock);
-		}
-
-	} while (done < count);
-
-	return done;
-}
-
 
 static ssize_t dev_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
@@ -392,6 +351,39 @@ static ssize_t dev_write(struct file *filp, const char __user *buf, size_t count
 	return firstwrite+secondwrite;
 }
 
+static ssize_t dev_write1(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
+{
+	int done = 0;
+	const char *bufPtr;
+	size_t left = count;
+	ssize_t processed;
+
+	do {
+		bufPtr = &buf[done];
+
+		processed = dev_write(filp,bufPtr, left, f_pos);
+		done = done + processed;
+		left = left - processed;
+
+		if (left > 0)
+		{
+			// Block and wait till there is some room
+			if(mutex_lock_interruptible(&bufferlock))
+				return 0;
+
+			isHeld = true;
+
+			if(mutex_lock_interruptible(&bufferlock))
+				return 0;
+
+			mutex_unlock(&bufferlock);
+		}
+
+	} while (done < count);
+
+	return done;
+}
+
 
 
 /** @brief The device release function that is called whenever the device is closed/released by
@@ -417,7 +409,6 @@ static int dev_release(struct inode *inodep, struct file *filep)
 static int __init paschar_init(void)
 {
 	int result = 0;
-	int i;
 	unsigned long sampleInterval = (NANOSECONDS/hertz);
 
 
