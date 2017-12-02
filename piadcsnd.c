@@ -38,7 +38,7 @@ MODULE_VERSION("0.1");
 
 
 static unsigned int gpioLEDS[] = {17,27,22,5,6,26,23,25};
-static unsigned int numLeds = 8;     ///< The blink period in ms
+static unsigned int numLeds = 8;     // number of leds setup
 
 static int    numberOpens = 0;              ///< Counts the number of times the device is opened
 
@@ -67,10 +67,10 @@ static DEFINE_MUTEX(bufferlock);
 
 
 static unsigned int hertz = 8000;           ///Hertz to drive at.
-module_param(hertz, uint, S_IWUSR | S_IWGRP);
+module_param(hertz, uint, S_IWUSR | S_IRUSR| S_IWGRP | S_IRGRP);
 MODULE_PARM_DESC(hertz, "Herz to output at"); 
 
-module_param(numLeds, uint, S_IWUSR | S_IWGRP);   ///< Param desc. S_IRUGO can be read/not changed
+module_param(numLeds, uint, S_IWUSR | S_IRUSR| S_IWGRP | S_IRGRP);   ///< Param desc. S_IRUGO can be read/not changed
 MODULE_PARM_DESC(numLeds, " Pins to use, least significant first");
 
 static char ledName[20] = "GPIOGroup";          ///< Null terminated default string -- just in case
@@ -101,7 +101,7 @@ static ssize_t hertz_store(struct kobject *kobj, struct kobj_attribute *attr, co
 	unsigned long res;
 	int thertz =  kstrtoul(buf, 	10,&res);
 
-	printk(KERN_INFO "PAS: Hertz set %d\n", thertz);
+	printk(KERN_INFO "PAS: Hertz set %d\n", res);
 
 	hertz = res;
 	return count;
@@ -124,7 +124,7 @@ static ssize_t pins_show(struct kobject *kobj, struct kobj_attribute *attr, char
 /** @brief A callback function to store the GPIO pin mapping */
 static ssize_t pins_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
 {
-	int i;
+	size_t i;
 	int state = 0;
 	char c;
 	int num = 0;
@@ -147,6 +147,7 @@ static ssize_t pins_store(struct kobject *kobj, struct kobj_attribute *attr, con
 		case '8':
 		case '9':
 			number = 10 * number + c-'0';
+			state = 1;
 			break;
 
 		default:
@@ -170,7 +171,7 @@ static ssize_t pins_store(struct kobject *kobj, struct kobj_attribute *attr, con
 		printk(KERN_INFO "PAS: pins %d - %d",i,gpioLEDS[i]);
 	}
 
-	return numLeds;
+	return count;
 }
 
 /** Use these helper macros to define the name and access levels of the kobj_attributes
@@ -233,6 +234,9 @@ static enum hrtimer_restart timedRefresh(struct hrtimer* mytimer)
 	unsigned long sampleInterval = (NANOSECONDS/hertz);
 	unsigned long left ;
 
+	/** add one sample interval to our clock*/
+	hrtimer_forward_now(mytimer, (ktime_set(0,sampleInterval)));
+
 	writeVal(mybuffer.buffer[mybuffer.tail]);
 
 	/** if there's more than one sample in the buffer, increment the dequeue index*/
@@ -243,12 +247,12 @@ static enum hrtimer_restart timedRefresh(struct hrtimer* mytimer)
 		mybuffer.tail = (mybuffer.tail+1) % buffersize;
 	}
 
-	/** add one sample interval to our clock*/
-	hrtimer_forward_now(mytimer, (ktime_set(0,sampleInterval)));
 
+	// check if someone is waiting to write
 	if (isHeld)
 	{
-		if (left < buffersize/2)
+		// if there is some room in the buffer, let them write.
+		if (left < 3*buffersize/4)
 		{
 			isHeld = false;
 			mutex_unlock(&bufferlock);
@@ -441,12 +445,9 @@ static int __init paschar_init(void)
 		return PTR_ERR(pascharDevice);
 	}
 
-	// setup_io();
-
 	sprintf(ledName, "GpioGroup");
 
 	pas_kobj = kobject_create_and_add("pas", kernel_kobj->parent); // kernel_kobj points to /sys/kernel
-
 
 	if(!pas_kobj){
 		printk(KERN_ALERT "PAS SND: failed to create kobject\n");
