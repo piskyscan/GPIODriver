@@ -1,12 +1,12 @@
 /**
+ * Kernel module to write data out to GPIO's in parallel at defined timing
+ *
+ * PiSkyScan
+ *
+ * 4th Dec 2017
+ *
  *
  */
-
-//#include <stdio.h>
-//#include <stdlib.h>
-//#include <fcntl.h>
-//#include <sys/mman.h>
-//#include <unistd.h>
 
 #include <linux/init.h>
 #include <linux/module.h>
@@ -21,14 +21,9 @@
 #include <linux/circ_buf.h>
 #include <asm/uaccess.h>          // Required for the copy to user function
 #include <asm/io.h>
-#include <linux/platform_data/bcm2708.h>
-
 
 #define  DEVICE_NAME "paschar"    ///< The device will appear at /dev/paschar using this value
 #define  CLASS_NAME  "pas"
-
-
-#define NANOSECONDS 1000000000
 
 
 MODULE_LICENSE("GPL");
@@ -37,8 +32,8 @@ MODULE_DESCRIPTION("Simple Pi Driver for GPIO");
 MODULE_VERSION("0.1");
 
 
-static unsigned int gpioLEDS[] = {17,27,22,5,6,26,23,25};
-static unsigned int numLeds = 8;     // number of leds setup
+static unsigned int gpioArr[] = {17,27,22,5,6,26,23,25};
+static unsigned int numGpio = 0;     // number of gpio's setup
 
 static int    numberOpens = 0;              ///< Counts the number of times the device is opened
 
@@ -66,44 +61,53 @@ static DEFINE_MUTEX(inputlock);
 static DEFINE_MUTEX(bufferlock);
 
 
-static unsigned int hertz = 8000;           ///Hertz to drive at.
-module_param(hertz, uint, S_IWUSR | S_IRUSR| S_IWGRP | S_IRGRP);
-MODULE_PARM_DESC(hertz, "Herz to output at"); 
+static unsigned int nanoseconds = 1000000000/1000;           ///Nanoseconds to drive at, start at 1kHz
+module_param(nanoseconds, uint, S_IWUSR | S_IRUSR| S_IWGRP | S_IRGRP);
+MODULE_PARM_DESC(nanoseconds, "nanoseconds to output at");
 
-module_param(numLeds, uint, S_IWUSR | S_IRUSR| S_IWGRP | S_IRGRP);   ///< Param desc. S_IRUGO can be read/not changed
-MODULE_PARM_DESC(numLeds, " Pins to use, least significant first");
+module_param(numGpio, uint, S_IWUSR | S_IRUSR| S_IWGRP | S_IRGRP);   ///< Param desc. S_IRUGO can be read/not changed
+MODULE_PARM_DESC(numGpio, " Pins to use, least significant first");
 
-static char ledName[20] = "GPIOGroup";          ///< Null terminated default string -- just in case
+static char gpioName[20] = "GPIOGroup";          ///< Null terminated default string -- just in case
+
+bool isHeld = false;  // variable to see if we are blocking input
 
 static void setupGPIO(void)
 {
 	int i;
 
-	for (i = 0; i < numLeds;i++)
+	for (i = 0; i < numGpio;i++)
 	{
-		gpio_request(gpioLEDS[i], "sysfs");
-		gpio_direction_output(gpioLEDS[i], 0);   // Set the gpio to be in output mode and turn on
-		gpio_export(gpioLEDS[i], false);  // causes gpio to appear in /sys/class/gpio
+		gpio_request(gpioArr[i], "sysfs");
+		gpio_direction_output(gpioArr[i], 0);   // Set the gpio to be in output mode and turn on
+		gpio_export(gpioArr[i], false);  // causes gpio to appear in /sys/class/gpio
 		// the second argument prevents the direction from being changed
 	}
 }
 
 
-static ssize_t hertz_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+static ssize_t nanoseconds_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
-	printk(KERN_INFO "PAS: Hertz requested %d\n", hertz);
-	return sprintf(buf, "%d\n",hertz);
+	printk(KERN_INFO "PAS: Nanoseconds requested %d\n", nanoseconds);
+	return sprintf(buf, "%d\n",nanoseconds);
 }
 
 /** @brief A callback function to store the frequency */
-static ssize_t hertz_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
+static ssize_t nanoseconds_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
 {
 	unsigned long res;
-	int thertz =  kstrtoul(buf, 	10,&res);
 
-	printk(KERN_INFO "PAS: Hertz set %d\n", res);
+	kstrtoul(buf, 	10,&res);
 
-	hertz = res;
+	if (res > 0)
+	{
+	printk(KERN_INFO "PAS: nanoseconds set %lu\n", res);
+	nanoseconds = res;
+	}
+	else
+	{
+		printk(KERN_INFO "PAS: nanoseconds must be >0\n");
+	}
 	return count;
 }
 
@@ -112,13 +116,12 @@ static ssize_t pins_show(struct kobject *kobj, struct kobj_attribute *attr, char
 {
 	int i;
 
-	for (i = 0;i < numLeds;i++)
+	for (i = 0;i < numGpio;i++)
 	{
-		printk(KERN_INFO "PAS: pin %d is %d \n", i, gpioLEDS[i]);
+		printk(KERN_INFO "PAS: pin %d is %d \n", i, gpioArr[i]);
 	}
 
-	return sprintf(buf, "%d %d %d %d %d %d %d %d\n", gpioLEDS[0],gpioLEDS[1],gpioLEDS[2],gpioLEDS[3],
-			gpioLEDS[4],gpioLEDS[5],gpioLEDS[6],gpioLEDS[7]);
+	return sprintf(buf, "%d\n",numGpio );
 }
 
 /** @brief A callback function to store the GPIO pin mapping */
@@ -153,7 +156,7 @@ static ssize_t pins_store(struct kobject *kobj, struct kobj_attribute *attr, con
 		default:
 			if (state ==1)
 			{
-				gpioLEDS[num] = number;
+				gpioArr[num] = number;
 				num++;
 				number = 0;
 				state = 0;
@@ -162,13 +165,13 @@ static ssize_t pins_store(struct kobject *kobj, struct kobj_attribute *attr, con
 		}
 	}
 
-	numLeds = num;
+	numGpio = num;
 
 	setupGPIO();
 
 	for (i = 0;i<num;i++)
 	{
-		printk(KERN_INFO "PAS: pins %d - %d",i,gpioLEDS[i]);
+		printk(KERN_INFO "PAS: pins %d - %d",i,gpioArr[i]);
 	}
 
 	return count;
@@ -176,22 +179,21 @@ static ssize_t pins_store(struct kobject *kobj, struct kobj_attribute *attr, con
 
 /** Use these helper macros to define the name and access levels of the kobj_attributes
  *  The kobj_attribute has an attribute attr (name and mode), show and store function pointers
- *  The period variable is associated with the blinkPeriod variable and it is to be exposed
- *  with mode 0666 using the period_show and period_store functions above
  */
-static struct kobj_attribute hertz_attr = __ATTR(hertz, S_IWUSR | S_IWGRP, hertz_show, hertz_store);
-static struct kobj_attribute mode_attr = __ATTR(mode, S_IWUSR | S_IWGRP, pins_show, pins_store);
+
+static struct kobj_attribute nanoseconds_attr = __ATTR(nanoseconds, S_IWUSR | S_IWGRP, nanoseconds_show, nanoseconds_store);
+static struct kobj_attribute mode_attr = __ATTR(pins, S_IWUSR | S_IWGRP, pins_show, pins_store);
 
 static struct attribute *pas_attrs[] =
 {
-		&hertz_attr.attr,                       // The period at which the LED flashes
-		&mode_attr.attr,                         // Is the LED on or off?
+		&nanoseconds_attr.attr,                       // The period at which the Gpio cylces
+		&mode_attr.attr,                         // Not used
 		NULL,
 };
 
 static struct attribute_group attr_group =
 {
-		.name  = ledName,
+		.name  = gpioName,
 		.attrs = pas_attrs,                      // The attributes array defined just above
 };
 
@@ -203,7 +205,7 @@ static int     dev_release(struct inode *, struct file *);
 static ssize_t dev_read(struct file *, char *, size_t, loff_t *);
 static ssize_t dev_write1(struct file *, const char *, size_t, loff_t *);
 
-/** @brief high-resolution timer used for the write-signal to the DAC*/
+/** @brief high-resolution timer used for the write-signal to the GPIO*/
 static struct hrtimer refreshclock;
 
 
@@ -216,22 +218,20 @@ static void writeVal(char c)
 	int j;
 	int val;
 
-	for (j = 0;j < numLeds;j++)
+	for (j = 0;j < numGpio;j++)
 	{
 		val = c & 1;
 		c = c / 2;
 
-		gpio_set_value(gpioLEDS[j],val);       // Use the LED state to light/turn off the LED
-
+		gpio_set_value(gpioArr[j],val);       // Use the LED state to light/turn off the LED
 	}
 }
 
-bool isHeld = false;
 
 
 static enum hrtimer_restart timedRefresh(struct hrtimer* mytimer)
 {
-	unsigned long sampleInterval = (NANOSECONDS/hertz);
+	unsigned long sampleInterval = nanooseconds;
 	unsigned long left ;
 
 	/** add one sample interval to our clock*/
@@ -246,7 +246,6 @@ static enum hrtimer_restart timedRefresh(struct hrtimer* mytimer)
 	{
 		mybuffer.tail = (mybuffer.tail+1) % buffersize;
 	}
-
 
 	// check if someone is waiting to write
 	if (isHeld)
@@ -413,11 +412,9 @@ static int dev_release(struct inode *inodep, struct file *filep)
 static int __init paschar_init(void)
 {
 	int result = 0;
-	unsigned long sampleInterval = (NANOSECONDS/hertz);
+	unsigned long sampleInterval = nanoseconds;
 
-
-	printk(KERN_INFO "PAS : Initializing the Piadcsnd\n");
-
+	printk(KERN_INFO "PAS : Initializing the paschar device\n");
 
 	// Try to dynamically allocate a major number for the device -- more difficult but worth it
 	majorNumber = register_chrdev(0, DEVICE_NAME, &fops);
@@ -445,7 +442,7 @@ static int __init paschar_init(void)
 		return PTR_ERR(pascharDevice);
 	}
 
-	sprintf(ledName, "GpioGroup");
+	sprintf(gpioName, "GpioGroup");
 
 	pas_kobj = kobject_create_and_add("pas", kernel_kobj->parent); // kernel_kobj points to /sys/kernel
 
@@ -484,10 +481,10 @@ static int __init paschar_init(void)
 static void __exit paschar_exit(void)
 {
 	int i;
-	//   kthread_stop(task);                      // Stop the LED flashing thread
+
 	kobject_put(pas_kobj);                   // clean up -- remove the kobject sysfs entry
 
-	for (i = 0; i < numLeds;i++)
+	for (i = 0; i < numGpio;i++)
 	{
 		gpio_set_value(gpioLEDS[i], 0);              // Turn the LED off, indicates device was unloaded
 		gpio_unexport(gpioLEDS[i]);                  // Unexport the Button GPIO
@@ -498,7 +495,6 @@ static void __exit paschar_exit(void)
 	{
 		/** cancel the timers, waiting callbacks to complete if neccesary*/
 		hrtimer_cancel(&refreshclock);
-
 	}
 
 	/** deregister our device with the system*/
