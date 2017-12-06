@@ -97,7 +97,13 @@ static ssize_t nanoseconds_store(struct kobject *kobj, struct kobj_attribute *at
 {
 	unsigned long res;
 
-	kstrtoul(buf, 	10,&res);
+	int retval = kstrtoul(buf, 	10,&res);
+
+	if (retval)
+	{
+		printk(KERN_INFO "PAS: couldnt understand store");
+		return retval;
+	}
 
 	if (res > 0)
 	{
