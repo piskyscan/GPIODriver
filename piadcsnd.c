@@ -60,8 +60,8 @@ static DEFINE_MUTEX(inputlock);
 
 static DEFINE_MUTEX(bufferlock);
 
-
 static unsigned int nanoseconds = 1000000000/1000;           ///Nanoseconds to drive at, start at 1kHz
+
 module_param(nanoseconds, uint, S_IWUSR | S_IRUSR| S_IWGRP | S_IRGRP);
 MODULE_PARM_DESC(nanoseconds, "nanoseconds to output at");
 
@@ -231,7 +231,7 @@ static void writeVal(char c)
 
 static enum hrtimer_restart timedRefresh(struct hrtimer* mytimer)
 {
-	unsigned long sampleInterval = nanooseconds;
+	unsigned long sampleInterval = nanoseconds;
 	unsigned long left ;
 
 	/** add one sample interval to our clock*/
@@ -486,9 +486,9 @@ static void __exit paschar_exit(void)
 
 	for (i = 0; i < numGpio;i++)
 	{
-		gpio_set_value(gpioLEDS[i], 0);              // Turn the LED off, indicates device was unloaded
-		gpio_unexport(gpioLEDS[i]);                  // Unexport the Button GPIO
-		gpio_free(gpioLEDS[i]);
+		gpio_set_value(gpioArr[i], 0);              // Turn the LED off, indicates device was unloaded
+		gpio_unexport(gpioArr[i]);                  // Unexport the Button GPIO
+		gpio_free(gpioArr[i]);
 	}
 
 	if(refreshclock.function == &timedRefresh)
