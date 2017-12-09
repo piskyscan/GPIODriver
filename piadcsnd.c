@@ -187,8 +187,8 @@ static ssize_t pins_store(struct kobject *kobj, struct kobj_attribute *attr, con
  *  The kobj_attribute has an attribute attr (name and mode), show and store function pointers
  */
 
-static struct kobj_attribute nanoseconds_attr = __ATTR(nanoseconds, S_IWUSR | S_IWGRP, nanoseconds_show, nanoseconds_store);
-static struct kobj_attribute mode_attr = __ATTR(pins, S_IWUSR | S_IWGRP, pins_show, pins_store);
+static struct kobj_attribute nanoseconds_attr = __ATTR(nanoseconds, S_IWUSR | S_IRUSR| S_IWGRP | S_IRGRP, nanoseconds_show, nanoseconds_store);
+static struct kobj_attribute mode_attr = __ATTR(pins, S_IWUSR | S_IRUSR| S_IWGRP | S_IRGRP, pins_show, pins_store);
 
 static struct attribute *pas_attrs[] =
 {
